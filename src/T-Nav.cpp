@@ -1,7 +1,4 @@
 #include "config.h"
-// Add Arduino header for compatibility with STL
-#include <Arduino.h>
-#include <vector>
 
 // Touch panel mode enum
 enum {
@@ -9,38 +6,6 @@ enum {
     TOUCH_MONITOR_MODE,
     TOUCH_SLEEP_MODE,
 };
-
-struct Ball {
-    float x;
-    float y;
-    float vx;
-    float vy;
-    int radius;
-};
-
-struct Hole {
-    int x;
-    int y;
-    int radius;
-    bool isDanger;
-};
-
-// Global variables for game
-
-struct GameState {
-    Ball ball;
-    Hole targetHole;  // The green hole to reach
-    uint32_t startTime;
-    uint32_t totalTime;  // Total time across all levels
-    int level;
-    bool isPlaying;
-    bool levelComplete;
-    bool gameOver;
-    bool gameWon;
-};
-
-// Global game state
-GameState gameState;
 
 TTGOClass *ttgo = nullptr;
 TFT_eSPI *tft = nullptr;
@@ -79,6 +44,32 @@ int16_t prevTimeY = 0;
 int16_t prevTimeWidth = 0;
 int16_t prevTimeHeight = 0;
 bool clockInitialized = false;
+
+struct Ball {
+    float x;
+    float y;
+    float vx;
+    float vy;
+    int radius;
+};
+
+struct Hole {
+    int x;
+    int y;
+    int radius;
+};
+
+// Update GameState struct to include initial hole size
+struct GameState {
+    Ball ball;
+    Hole hole;
+    uint32_t startTime;
+    uint32_t bestTime;
+    int level;
+    bool isPlaying;
+    bool levelComplete;
+    int initialHoleSize;  // Added to track initial hole size
+} gameState;
 
 bool Quectel_L76X_Probe()
 {
@@ -349,72 +340,79 @@ void switchScreen(bool toClockScreen) {
     }
 }
 
-void initGame(bool firstStart = false) {
+void initGame() {
     gameState.ball = {120, 120, 0, 0, 5};  // Start in center
-    if (firstStart) {
-        gameState.level = 1;
-        gameState.totalTime = 0;
-    }
+    gameState.initialHoleSize = 50;  // Start with 100px diameter hole (50px radius)
+    // Calculate current level's hole size
+    int currentHoleSize = max(8, gameState.initialHoleSize - ((gameState.level - 1) * 5));
+    gameState.hole = {
+        random(currentHoleSize, 240-currentHoleSize),  // Keep hole fully on screen
+        random(currentHoleSize, 240-currentHoleSize),
+        currentHoleSize
+    };
+    gameState.startTime = millis();
+    gameState.level = 1;
     gameState.isPlaying = true;
     gameState.levelComplete = false;
-    gameState.gameOver = false;
-    gameState.gameWon = false;
-    gameState.startTime = millis();
-    // Shrink hole each level, but never below 14px radius
-    int holeRadius = max(14, 30 - (gameState.level - 1) * 2);
-    // Only initialize the green target hole, keep it away from ball start position
-    bool validHolePosition = false;
-    while (!validHolePosition) {
-        gameState.targetHole = {
-            random(40, 200),
-            random(40, 200),
-            holeRadius
-        };
-        float dx = gameState.targetHole.x - gameState.ball.x;
-        float dy = gameState.targetHole.y - gameState.ball.y;
-        float distance = sqrt(dx*dx + dy*dy);
-        if (distance > 80) {
-            validHolePosition = true;
-        }
+
+    // Initialize game sprite if not already done
+    if (!gameSprite) {
+        gameSprite = new TFT_eSprite(ttgo->tft);
+        gameSprite->createSprite(240, 240);
     }
 }
 
 void drawGame() {
+    // Draw to sprite instead of directly to screen
     gameSprite->fillSprite(TFT_BLACK);
-    // Draw target hole (green)
-    gameSprite->fillCircle(gameState.targetHole.x, gameState.targetHole.y, 
-                          gameState.targetHole.radius, TFT_GREEN);
+    
+    // Draw hole
+    gameSprite->fillCircle(gameState.hole.x, gameState.hole.y, gameState.hole.radius, TFT_RED);
+    
     // Draw ball
-    gameSprite->fillCircle(gameState.ball.x, gameState.ball.y, 
-                          gameState.ball.radius, TFT_WHITE);
+    gameSprite->fillCircle(gameState.ball.x, gameState.ball.y, gameState.ball.radius, TFT_WHITE);
+    
     // Draw level and time
     gameSprite->setTextSize(1);
     gameSprite->setTextFont(2);
     gameSprite->setTextColor(TFT_GREEN);
-    char buf[64];
-    sprintf(buf, "Level: %d/10", gameState.level);
+    
+    char buf[32];
+    sprintf(buf, "Level: %d", gameState.level);
     gameSprite->drawString(buf, 5, 5, 2);
+    
     uint32_t elapsed = (millis() - gameState.startTime) / 1000;
     sprintf(buf, "Time: %ds", elapsed);
     gameSprite->drawString(buf, 5, 25, 2);
+    
+    // Push sprite to screen
     gameSprite->pushSprite(0, 0);
 }
 
 void updateBall() {
     Accel acc;
     if (sensor->getAccel(acc)) {
-        float sensitivity = 0.1;
-        float friction = 0.95;
+        // Reduce sensitivity even further and make movement smoother
+        float sensitivity = 0.1;  // Reduced from 0.2
+        float friction = 0.95;    // Increased from 0.92 for smoother movement
+        
+        // Apply smooth acceleration
         gameState.ball.vx = (gameState.ball.vx * friction) - (acc.y * sensitivity);
         gameState.ball.vy = (gameState.ball.vy * friction) + (acc.x * sensitivity);
+        
+        // Limit maximum velocity
         float maxSpeed = 4.0;
         gameState.ball.vx = constrain(gameState.ball.vx, -maxSpeed, maxSpeed);
         gameState.ball.vy = constrain(gameState.ball.vy, -maxSpeed, maxSpeed);
+        
+        // Update position
         gameState.ball.x += gameState.ball.vx;
         gameState.ball.y += gameState.ball.vy;
+        
+        // Screen boundaries with bounce effect
         if (gameState.ball.x < gameState.ball.radius) {
             gameState.ball.x = gameState.ball.radius;
-            gameState.ball.vx = -gameState.ball.vx * 0.5;
+            gameState.ball.vx = -gameState.ball.vx * 0.5;  // Bounce with energy loss
         }
         if (gameState.ball.x > 240 - gameState.ball.radius) {
             gameState.ball.x = 240 - gameState.ball.radius;
@@ -428,72 +426,54 @@ void updateBall() {
             gameState.ball.y = 240 - gameState.ball.radius;
             gameState.ball.vy = -gameState.ball.vy * 0.5;
         }
-        // Check collision with target hole
-        float dx = gameState.ball.x - gameState.targetHole.x;
-        float dy = gameState.ball.y - gameState.targetHole.y;
+        
+        // Check if ball is in hole
+        float dx = gameState.ball.x - gameState.hole.x;
+        float dy = gameState.ball.y - gameState.hole.y;
         float distance = sqrt(dx * dx + dy * dy);
-        if (distance < (gameState.targetHole.radius - gameState.ball.radius)) {
+        
+        if (distance < gameState.hole.radius) {
             gameState.levelComplete = true;
             uint32_t levelTime = (millis() - gameState.startTime) / 1000;
-            gameState.totalTime += levelTime;
-            if (gameState.level >= 10) {
-                gameState.gameWon = true;
-                gameState.isPlaying = false;
-                ttgo->tft->fillScreen(TFT_BLACK);
-                ttgo->tft->setTextSize(1);
-                ttgo->tft->setTextFont(4);
-                ttgo->tft->setTextColor(TFT_GREEN);
-                char buf[64];
-                sprintf(buf, "You Won!");
-                ttgo->tft->drawString(buf, 20, 60, 4);
-                sprintf(buf, "Total Time: %ds", gameState.totalTime);
-                ttgo->tft->drawString(buf, 20, 100, 4);
-                sprintf(buf, "Score: %d", 1000 - (gameState.totalTime * 2));
-                ttgo->tft->drawString(buf, 20, 140, 4);
-                ttgo->drv->go();
-                delay(5000);
-                return;
-            }
+            
+            // Show completion message
             ttgo->tft->fillScreen(TFT_BLACK);
             ttgo->tft->setTextSize(1);
             ttgo->tft->setTextFont(4);
             ttgo->tft->setTextColor(TFT_GREEN);
+            
             char buf[64];
             sprintf(buf, "Level %d Complete!", gameState.level);
             ttgo->tft->drawString(buf, 20, 60, 4);
+            
             sprintf(buf, "Time: %ds", levelTime);
             ttgo->tft->drawString(buf, 20, 100, 4);
-            gameState.level++;
+            
+            sprintf(buf, "Next hole: %dpx", max(8, gameState.initialHoleSize - (gameState.level * 5)));
+            ttgo->tft->drawString(buf, 20, 140, 4);
+            
+            // Vibrate to indicate success
             ttgo->drv->go();
+            
             delay(2000);
-            // Start next level, do not reset level or totalTime
-            initGame(false);
+            
+            // Start next level
+            gameState.level++;
+            gameState.ball = {120, 120, 0, 0, 5};
+            int newHoleSize = max(8, gameState.initialHoleSize - ((gameState.level - 1) * 5));
+            gameState.hole = {
+                random(newHoleSize, 240-newHoleSize),
+                random(newHoleSize, 240-newHoleSize),
+                newHoleSize
+            };
+            gameState.startTime = millis();
+            gameState.levelComplete = false;
         }
     }
 }
 
 void startBallGame() {
-    // Clear the screen first
-    ttgo->tft->fillScreen(TFT_BLACK);
-    
-    // Initialize game sprite
-    if (gameSprite) {
-        delete gameSprite;
-        gameSprite = nullptr;
-    }
-    gameSprite = new TFT_eSprite(ttgo->tft);
-    gameSprite->createSprite(240, 240);
-    
-    // Initialize game state (first start)
-    initGame(true);
-    
-    // Show "Get Ready" message
-    ttgo->tft->setTextFont(4);
-    ttgo->tft->setTextColor(TFT_GREEN);
-    ttgo->tft->drawString("Get Ready!", 60, 100, 4);
-    delay(1000);
-    
-    // Game loop
+    initGame();
     while (gameState.isPlaying) {
         int16_t x, y;
         if (ttgo->getTouch(x, y)) {
@@ -509,7 +489,6 @@ void startBallGame() {
         drawGame();
         delay(16);  // ~60 FPS
     }
-    
     // Return to clock screen
     switchScreen(true);
 }
