@@ -31,7 +31,6 @@ TFT_eSprite *eSpSpeed = nullptr;
 TFT_eSprite *eSpSatellites = nullptr;
 TFT_eSprite *eSpPower = nullptr;  // New sprite for power info
 TFT_eSprite *eSpRTC = nullptr;  // New sprite for RTC display
-TFT_eSprite *gameSprite = nullptr;  // Sprite for game rendering
 HardwareSerial *GNSS = NULL;
 
 uint32_t last = 0;
@@ -354,77 +353,62 @@ void initGame() {
     gameState.level = 1;
     gameState.isPlaying = true;
     gameState.levelComplete = false;
-
-    // Initialize game sprite if not already done
-    if (!gameSprite) {
-        gameSprite = new TFT_eSprite(ttgo->tft);
-        gameSprite->createSprite(240, 240);
-    }
 }
 
 void drawGame() {
-    // Draw to sprite instead of directly to screen
-    gameSprite->fillSprite(TFT_BLACK);
+    ttgo->tft->fillScreen(TFT_BLACK);
     
     // Draw hole
-    gameSprite->fillCircle(gameState.hole.x, gameState.hole.y, gameState.hole.radius, TFT_RED);
+    ttgo->tft->fillCircle(gameState.hole.x, gameState.hole.y, gameState.hole.radius, TFT_RED);
     
     // Draw ball
-    gameSprite->fillCircle(gameState.ball.x, gameState.ball.y, gameState.ball.radius, TFT_WHITE);
+    ttgo->tft->fillCircle(gameState.ball.x, gameState.ball.y, gameState.ball.radius, TFT_WHITE);
     
     // Draw level and time
-    gameSprite->setTextSize(1);
-    gameSprite->setTextFont(2);
-    gameSprite->setTextColor(TFT_GREEN);
+    ttgo->tft->setTextSize(1);
+    ttgo->tft->setTextFont(2);
+    ttgo->tft->setTextColor(TFT_GREEN);
     
     char buf[32];
     sprintf(buf, "Level: %d", gameState.level);
-    gameSprite->drawString(buf, 5, 5, 2);
+    ttgo->tft->drawString(buf, 5, 5, 2);
     
     uint32_t elapsed = (millis() - gameState.startTime) / 1000;
     sprintf(buf, "Time: %ds", elapsed);
-    gameSprite->drawString(buf, 5, 25, 2);
-    
-    // Push sprite to screen
-    gameSprite->pushSprite(0, 0);
+    ttgo->tft->drawString(buf, 5, 25, 2);
 }
 
 void updateBall() {
     Accel acc;
     if (sensor->getAccel(acc)) {
-        // Reduce sensitivity even further and make movement smoother
-        float sensitivity = 0.1;  // Reduced from 0.2
-        float friction = 0.95;    // Increased from 0.92 for smoother movement
+        // Invert axis and reduce sensitivity
+        gameState.ball.vx -= acc.y * 0.2;  // Inverted Y axis
+        gameState.ball.vy += acc.x * 0.2;  // Inverted X axis
         
-        // Apply smooth acceleration
-        gameState.ball.vx = (gameState.ball.vx * friction) - (acc.y * sensitivity);
-        gameState.ball.vy = (gameState.ball.vy * friction) + (acc.x * sensitivity);
-        
-        // Limit maximum velocity
-        float maxSpeed = 4.0;
-        gameState.ball.vx = constrain(gameState.ball.vx, -maxSpeed, maxSpeed);
-        gameState.ball.vy = constrain(gameState.ball.vy, -maxSpeed, maxSpeed);
+        // Increased friction from 0.95 to 0.92 to slow ball down more quickly
+        gameState.ball.vx *= 0.92;
+        gameState.ball.vy *= 0.92;
         
         // Update position
         gameState.ball.x += gameState.ball.vx;
         gameState.ball.y += gameState.ball.vy;
         
-        // Screen boundaries with bounce effect
+        // Screen boundaries
         if (gameState.ball.x < gameState.ball.radius) {
             gameState.ball.x = gameState.ball.radius;
-            gameState.ball.vx = -gameState.ball.vx * 0.5;  // Bounce with energy loss
+            gameState.ball.vx = 0;
         }
         if (gameState.ball.x > 240 - gameState.ball.radius) {
             gameState.ball.x = 240 - gameState.ball.radius;
-            gameState.ball.vx = -gameState.ball.vx * 0.5;
+            gameState.ball.vx = 0;
         }
         if (gameState.ball.y < gameState.ball.radius) {
             gameState.ball.y = gameState.ball.radius;
-            gameState.ball.vy = -gameState.ball.vy * 0.5;
+            gameState.ball.vy = 0;
         }
         if (gameState.ball.y > 240 - gameState.ball.radius) {
             gameState.ball.y = 240 - gameState.ball.radius;
-            gameState.ball.vy = -gameState.ball.vy * 0.5;
+            gameState.ball.vy = 0;
         }
         
         // Check if ball is in hole
@@ -455,12 +439,15 @@ void updateBall() {
             // Vibrate to indicate success
             ttgo->drv->go();
             
-            delay(2000);
+            delay(2000);  // Show completion message
             
             // Start next level
             gameState.level++;
+            // Reset ball position
             gameState.ball = {120, 120, 0, 0, 5};
+            // Calculate new hole size for next level
             int newHoleSize = max(8, gameState.initialHoleSize - ((gameState.level - 1) * 5));
+            // Place new hole with new size
             gameState.hole = {
                 random(newHoleSize, 240-newHoleSize),
                 random(newHoleSize, 240-newHoleSize),
@@ -475,12 +462,9 @@ void updateBall() {
 void startBallGame() {
     initGame();
     while (gameState.isPlaying) {
+        // Handle touch to exit
         int16_t x, y;
         if (ttgo->getTouch(x, y)) {
-            if (gameSprite) {
-                delete gameSprite;
-                gameSprite = nullptr;
-            }
             gameState.isPlaying = false;
             break;
         }
